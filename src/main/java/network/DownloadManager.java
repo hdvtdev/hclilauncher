@@ -1,11 +1,9 @@
 package network;
 
 import logging.SimpleLogger;
-import org.jetbrains.annotations.Nullable;
 
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.net.MalformedURLException;
 import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.channels.Channels;
@@ -16,7 +14,6 @@ import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HashMap;
-import java.util.Set;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -28,6 +25,8 @@ public class DownloadManager {
     private static final AtomicLong totalBytesDownloaded = new AtomicLong(0);
     private static final AtomicLong filesLeft = new AtomicLong(0);
     private static final AtomicLong totalStartTime = new AtomicLong(System.currentTimeMillis());
+
+    private static boolean insecure = false;
 
     public static double getCurrentDownloadSpeed() {
 
@@ -44,20 +43,15 @@ public class DownloadManager {
     }
 
 
-    public static void downloadFile(URI url, @Nullable String SHA1, Path destFolder, boolean createFolderFromURI) throws InterruptedException, MalformedURLException {
+    public static void downloadFile(URI url, String SHA1, Path destFolder, boolean createFolderFromURI) throws InterruptedException, IOException {
         semaphore.acquire();
-
-
 
         String fileName = url.toURL().getFile().replace("/", "");
         Path pathToFile = destFolder.resolve(fileName);
         if (createFolderFromURI) {
-            pathToFile = destFolder.resolve(url.getPath().substring(1));
+            Files.createDirectory(destFolder);
         }
         if (Files.exists(pathToFile)) return;
-
-        //
-
 
         try (ReadableByteChannel readableByteChannel = Channels.newChannel(url.toURL().openStream());
              FileOutputStream fileOutputStream = new FileOutputStream(fileName);
@@ -72,13 +66,15 @@ public class DownloadManager {
                 totalBytesDownloaded.addAndGet(bytesToWrite);
             }
 
-            if (SHA1 == null || SHA1.isBlank()) {
-                logger.error(new IllegalArgumentException("Empty hash."));
-                Files.delete(pathToFile);
-            } else {
-                if (!checkFileHash(pathToFile, SHA1)) {
-                    logger.warn("The provided hash does not match the hash of the file " + fileName + ", you can disable hash checking by using the argument --insecure.");
+            if (!insecure) {
+                if (SHA1 == null || SHA1.isBlank()) {
+                    logger.error(new IllegalArgumentException("Empty hash."));
                     Files.delete(pathToFile);
+                } else {
+                    if (!checkFileHash(pathToFile, SHA1)) {
+                        logger.warn("The provided hash does not match the hash of the file " + fileName + ", you can disable hash checking by using the argument --insecure.");
+                        Files.delete(pathToFile);
+                    }
                 }
             }
 
@@ -100,7 +96,7 @@ public class DownloadManager {
             executor.submit(() -> {
                 try {
                     downloadFile(url, urls.get(url), destFolder, createFoldersFromURI);
-                } catch (InterruptedException | MalformedURLException e) {
+                } catch (InterruptedException | IOException e) {
                     logger.error(e);
                 }
             });
@@ -138,5 +134,14 @@ public class DownloadManager {
 
         return false;
     }
+
+
+    public static void main(String[] args ) throws IOException, InterruptedException {
+        insecure = true;
+        Executors.newSingleThreadScheduledExecutor().scheduleAtFixedRate(() -> System.out.println(getCurrentDownloadSpeed() + " MB/s"), 500, 500, TimeUnit.MILLISECONDS);
+        downloadFile(URI.create("https://download-cdn.jetbrains.com/idea/ideaIU-2024.3.tar.gz"),null, Path.of(""), false);
+    }
+
+
 
 }

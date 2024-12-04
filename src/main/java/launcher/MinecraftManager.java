@@ -9,9 +9,13 @@ import logging.SimpleLogger;
 import network.DownloadManager;
 
 import java.io.*;
+import java.net.MalformedURLException;
 import java.net.URI;
 import java.nio.file.Path;
 import java.util.*;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 public class MinecraftManager {
 
@@ -31,11 +35,20 @@ public class MinecraftManager {
     private String versionID;
     private final Path VERSION;
 
-    public ChorusMinecraftManager(String versionID) {
-        this.versionID = versionID;
+
+    public MinecraftManager(String versionID) {
         this.VERSION = VERSIONS.resolve(versionID);
+        this.versionID = versionID;
     }
 
+    public static void main(String... aaa) throws IOException, InterruptedException {
+
+        MinecraftManager minecraftManager = new MinecraftManager("1.21.3");
+        DownloadManager.downloadFile(minecraftManager.getAssetsIndexURI(), "UNPROVIDED", INDEXES, false);
+        DownloadManager.downloadFiles(minecraftManager.getAssetsURIs(), OBJECTS, true);
+    }
+
+    /*
     public void downloadAll() {
         logger.info("Starting downloading minecraft " + versionID);
         DownloadManager.downloadFile(getVersionManifestURI(), VERSION, false);
@@ -48,14 +61,11 @@ public class MinecraftManager {
 
     }
 
+     */
+
     public static boolean launchMinecraft(String version) {
 
-        if (!getAvailableVersions().contains(version)) {
-            return false;
-        }
 
-
-        if (false) {}
 
         return false;
     }
@@ -69,17 +79,9 @@ public class MinecraftManager {
 
     public void checkAssets() {
         logger.info("Checking assets and downloading missing");
-        if (DownloadManager.getAsyncValue()) {
-            DownloadManager.manuallySetAsync(false);
-            DownloadManager.downloadFiles(getAssetsHashesURIs(), OBJECTS, true);
-            DownloadManager.manuallySetAsync(true);
-        } else {
-            DownloadManager.downloadFiles(getAssetsHashesURIs(), OBJECTS, true);
-        }
-
     }
 
-    private URI getClientURI() {
+    private Map<URI, String> getClientURI() {
         JsonObject jsonRoot = new JsonObject();
 
         try (FileReader fileReader = new FileReader(VERSION.resolve(Path.of(versionID + ".json")).toString())) {
@@ -88,26 +90,42 @@ public class MinecraftManager {
             System.err.println(e.getMessage());
         }
 
-
-        return URI.create(jsonRoot.getAsJsonObject("downloads").getAsJsonObject("client").get("url").getAsString());
+        JsonObject client = jsonRoot.getAsJsonObject("downloads").getAsJsonObject("client");
+        return Map.of(URI.create(client.get("url").getAsString()), client.get("sha1").getAsString());
     }
 
-    public static List<String> getAvailableVersions() {
+    public static Map<String, List<String>> getAvailableVersions() {
 
-        List<String> versionsList = new ArrayList<>();
+        Map<String, List<String>> versions = new HashMap<>();
 
-        try (InputStreamReader reader = new InputStreamReader(MANIFEST.toURL().openStream() )) {
+        List<String> releases = new ArrayList<>();
+        List<String> snapshots = new ArrayList<>();
+        List<String> oldVersions = new ArrayList<>();
+
+        try (InputStreamReader reader = new InputStreamReader(MANIFEST.toURL().openStream())) {
 
             JsonObject jsonRoot = gson.fromJson(reader, JsonObject.class);
-            JsonArray versions = jsonRoot.getAsJsonArray("versions");
-            versions.forEach(jsonElement -> versionsList.add(jsonElement.getAsJsonObject().get("id").getAsString()));
-
+            for (JsonElement version : jsonRoot.getAsJsonArray("versions")) {
+                String type = version.getAsJsonObject().get("type").getAsString();
+                if (type.equals("release")) {
+                    releases.add(version.getAsJsonObject().get("id").getAsString());
+                }
+                if (type.equals("snapshot")) {
+                    snapshots.add(version.getAsJsonObject().get("id").getAsString());
+                }
+                if (type.equals("old_alpha") || type.equals("old_beta")) {
+                    oldVersions.add(version.getAsJsonObject().get("id").getAsString());
+                }
+            }
         } catch (IOException e) {
             logger.error(e);
         }
 
-        return versionsList;
+        versions.put("releases", releases);
+        versions.put("snapshots", snapshots);
+        versions.put("oldVersions", oldVersions);
 
+        return versions;
     }
 
 
@@ -139,7 +157,24 @@ public class MinecraftManager {
         return URI.create("404");
     }
 
-    private URI getAssetsURI() {
+    private Map<URI, String> getAssetsURIs() {
+
+        Map<URI, String> uris = new HashMap<>();
+
+        try (FileReader reader = new FileReader(INDEXES.resolve(Path.of(getVersionIndex() + ".json")).toFile())) {
+            JsonObject root = gson.fromJson(reader, JsonObject.class);
+            root.getAsJsonObject("objects").entrySet().forEach(entry -> {
+                String hash = entry.getValue().getAsJsonObject().get("hash").getAsString();
+                uris.put(URI.create(RESOURCES + hash.substring(0, 2) + "/" + hash), hash);
+            });
+        } catch (IOException e) {
+            System.err.println(e.getMessage());
+        }
+
+        return uris;
+    }
+
+    private URI getAssetsIndexURI() {
         JsonObject jsonRoot = new JsonObject();
 
         try (FileReader fileReader = new FileReader(VERSION.resolve(Path.of(versionID + ".json")).toString())) {
@@ -147,6 +182,7 @@ public class MinecraftManager {
         } catch (IOException e) {
             System.err.println(e.getMessage());
         }
+
         return URI.create(jsonRoot.getAsJsonObject("assetIndex").get("url").getAsString());
     }
 
@@ -163,7 +199,7 @@ public class MinecraftManager {
     }
 
 
-    private List<URI> getLibrariesURIs()  {
+    private Map<URI, String> getLibrariesURIs()  {
 
         JsonObject jsonRoot = new JsonObject();
 
@@ -173,9 +209,8 @@ public class MinecraftManager {
             System.err.println(e.getMessage());
         }
 
-        List<URI> librariesURIs = new ArrayList<>();
+        Map<URI, String> librariesURIs = new HashMap<>();
         JsonArray librariesArray = jsonRoot.getAsJsonArray("libraries");
-
 
         for (JsonElement libraryElement : librariesArray) {
             JsonObject libraryObject = libraryElement.getAsJsonObject();
@@ -183,50 +218,13 @@ public class MinecraftManager {
 
             if (downloads != null && downloads.has("artifact")) {
                 JsonObject artifact = downloads.getAsJsonObject("artifact");
-                String url = artifact.get("url").getAsString();
-                librariesURIs.add(URI.create(url));
+                librariesURIs.put(URI.create(artifact.get("url").getAsString()), artifact.get("sha1").getAsString());
             }
         }
-
-        librariesURIs.removeIf(uri -> {
-            for (String substring : getOperatingSystemsNamesInverse()) {
-                if (uri.toString().contains(substring)) {
-                    return true;
-                }
-            }
-            return false;
-        });
-
 
         return librariesURIs;
-
     }
 
-    private List<URI> getAssetsHashesURIs() {
-        List<URI> hashes = new ArrayList<>();
-        Set<String> seenHashes = new HashSet<>();
-
-        try (FileReader reader = new FileReader(INDEXES.resolve(Path.of(getVersionIndex() + ".json")).toString())) {
-            JsonObject jsonObject = gson.fromJson(reader, JsonObject.class);
-            JsonObject objects = jsonObject.getAsJsonObject("objects");
-
-            for (Map.Entry<String, ?> entry : objects.entrySet()) {
-                JsonObject item = (JsonObject) entry.getValue();
-                if (item.has("hash")) {
-                    String hash = item.get("hash").getAsString();
-
-                    if (!seenHashes.contains(hash)) {
-                        seenHashes.add(hash);
-                        hashes.add(URI.create(RESOURCES + hash.substring(0, 2) + "/" + hash));
-                    }
-                }
-            }
-        } catch (IOException e) {
-            System.err.println(e.getMessage());
-        }
-
-        return hashes;
-    }
 
     private String[] getOperatingSystemsNamesInverse() {
         String osName = System.getProperty("os.name").toLowerCase();

@@ -4,7 +4,6 @@ import logging.SimpleLogger;
 
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.net.MalformedURLException;
 import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.channels.Channels;
@@ -16,7 +15,6 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -27,7 +25,8 @@ public class DownloadManager {
 
     private static final SimpleLogger logger = new SimpleLogger(true);
 
-    private static final Semaphore semaphore = new Semaphore(64, true);
+    private static final Semaphore semaphore = new Semaphore(35, true);
+    private static final ExecutorService writeThreads = Executors.newCachedThreadPool();
     private static final AtomicLong totalBytesDownloaded = new AtomicLong(0);
     public static final AtomicLong filesLeft = new AtomicLong(0);
     private static final AtomicLong totalStartTime = new AtomicLong(System.currentTimeMillis());
@@ -48,14 +47,15 @@ public class DownloadManager {
     }
 
 
-    public static void downloadFile(URI uri, String SHA1, Path rootFolder, boolean createFoldersFromURI) throws InterruptedException, IOException {
-        semaphore.acquire();
+    public static void downloadFile(URI uri, String SHA1, Path rootFolder, boolean createFoldersFromURI) {
 
         if (filesLeft.get() <= 0) {
             filesLeft.incrementAndGet();
         }
 
-        Path targetPath = createFoldersFromURI ? rootFolder.resolve(uri.getPath().substring(1)) : rootFolder.resolve(Path.of(uri.getPath()).getFileName());
+        Path targetPath = createFoldersFromURI
+                ? rootFolder.resolve(uri.getPath().substring(1))
+                : rootFolder.resolve(Path.of(uri.getPath()).getFileName());
         String fileName = targetPath.getFileName().toString();
         boolean checkHash = !insecure && !SHA1.equals("UNPROVIDED");
 
@@ -65,56 +65,74 @@ public class DownloadManager {
             return;
         }
 
-        Files.createDirectories(targetPath.getParent());
-
-        try (ReadableByteChannel readableByteChannel = Channels.newChannel(uri.toURL().openStream());
-             FileOutputStream fileOutputStream = new FileOutputStream(targetPath.toFile());
-             FileChannel fileChannel = fileOutputStream.getChannel()) {
-
-            ByteBuffer buffer = ByteBuffer.allocate(4096);
-            while (readableByteChannel.read(buffer) != -1) {
-                buffer.flip();
-                long bytesToWrite = buffer.remaining();
-                fileChannel.write(buffer);
-                buffer.clear();
-                totalBytesDownloaded.addAndGet(bytesToWrite);
-            }
-
-            if (checkHash) {
-                if (SHA1.isBlank()) {
-                    logger.error(new IllegalArgumentException("Empty hash."));
-                    Files.delete(targetPath);
-                } else {
-                    if (!checkFileHash(targetPath, SHA1)) {
-                        logger.warn("The provided hash does not match the hash of the file " + fileName + ", you can disable hash checking by using the argument --insecure.");
-                        Files.delete(targetPath);
-                    }
-                }
-            } else {
-                logger.warn("Ignoring SHA1 hash check for this file " + fileName);
-            }
-
+        try {
+            Files.createDirectories(targetPath.getParent());
         } catch (IOException e) {
-            logger.error(e);
-        } finally {
-            semaphore.release();
-            filesLeft.decrementAndGet();
-            lastDownloadedFile.set(fileName);
+            throw new RuntimeException(e);
         }
+
+
+        writeThreads.submit(() -> {
+            try (ReadableByteChannel readableByteChannel = Channels.newChannel(uri.toURL().openStream());
+                 FileOutputStream fileOutputStream = new FileOutputStream(targetPath.toFile());
+                 FileChannel fileChannel = fileOutputStream.getChannel()) {
+
+                ByteBuffer buffer = ByteBuffer.allocate(4096);
+                while (readableByteChannel.read(buffer) != -1) {
+                    buffer.flip();
+                    long bytesToWrite = buffer.remaining();
+                    fileChannel.write(buffer);
+                    buffer.clear();
+                    totalBytesDownloaded.addAndGet(bytesToWrite);
+                }
+
+                if (checkHash) {
+                    if (SHA1.isBlank()) {
+                        logger.error(new IllegalArgumentException("Empty hash."));
+                        Files.delete(targetPath);
+                    } else {
+                        if (!checkFileHash(targetPath, SHA1)) {
+                            logger.warn("The provided hash does not match the hash of the file " + fileName + ", you can disable hash checking by using the argument --insecure.");
+                            Files.delete(targetPath);
+                        }
+                    }
+                } else {
+                    logger.warn("Ignoring SHA1 hash check for this file " + fileName);
+                }
+
+            } catch (IOException e) {
+                logger.error(e);
+            } finally {
+                semaphore.release();
+                filesLeft.decrementAndGet();
+                lastDownloadedFile.set(fileName);
+            }
+        });
     }
 
     public static Map<URI, String> check(Map<URI, String> toCheck, Path rootFolder, boolean uriFolder) {
 
+        logger.info("Files integrity check...");
         Map<URI, String> badHash = new HashMap<>();
+        rootFolder = Path.of(System.getProperty("user.dir")).resolve(rootFolder);
 
         for (URI key : toCheck.keySet()) {
 
             Path targetPath = uriFolder ? rootFolder.resolve(key.getPath().substring(1)) : rootFolder.resolve(Path.of(key.getPath()).getFileName());
             if (!checkFileHash(targetPath, toCheck.get(key))) {
+                try {
+                    Files.delete(targetPath);
+                } catch (IOException e) {
+                    logger.error(e);
+                }
                 badHash.put(key, toCheck.get(key));
             }
 
         }
+
+        if (badHash.isEmpty()) {
+            logger.info("All files successfully passed integrity check.");
+        } else logger.warn("Some files did not pass validation, trying to re-download these files.");
 
         return badHash;
     }
@@ -130,6 +148,7 @@ public class DownloadManager {
                 System.out.print("\r" + getCurrentDownloadSpeed() + "MB/s, Files left: " + filesLeft.get() + ", Latest downloaded file: " + lastDownloadedFile.get());
                 if (filesLeft.get() == 0) {
                     executor.shutdownNow();
+                    writeThreads.shutdownNow();
                     totalBytesDownloaded.set(0);
                     totalStartTime.set(0);
                     scheduledThread.shutdownNow();
@@ -138,19 +157,13 @@ public class DownloadManager {
 
 
             for (URI url : urls.keySet()) {
-                executor.submit(() -> {
-                    try {
-                        downloadFile(url, urls.get(url), destFolder, createFoldersFromURI);
-                    } catch (InterruptedException | IOException e) {
-                        logger.error(e);
-                    }
-                });
+                semaphore.acquire();
+                executor.submit(() -> downloadFile(url, urls.get(url), destFolder, createFoldersFromURI));
             }
 
-            if (!scheduledThread.awaitTermination(15, TimeUnit.SECONDS)) {
-                downloadFiles(check(urls, destFolder, createFoldersFromURI), destFolder, createFoldersFromURI);
+            if (!scheduledThread.awaitTermination(60, TimeUnit.SECONDS)) {
+                logger.error(new TimeoutException("The downloadFiles task did not complete within the time frame (60 seconds). Try running the download again if it's not a bug!"));
             }
-            System.out.println("\nDownload finished");
 
 
         } catch (InterruptedException e) {
@@ -158,7 +171,6 @@ public class DownloadManager {
         }
 
     }
-
 
     public static boolean checkFileHash(Path filePath, String expectedHash) {
         try {

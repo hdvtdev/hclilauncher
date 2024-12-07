@@ -33,19 +33,25 @@ public class MinecraftManager {
     private static final String RESOURCES = "https://resources.download.minecraft.net/";
 
     private String versionID;
-    private final Path VERSION;
+    private Path VERSION;
 
 
     public MinecraftManager(String versionID) {
         this.VERSION = VERSIONS.resolve(versionID);
         this.versionID = versionID;
+        getVersionManifestURI();
     }
 
-    public static void main(String... aaa) throws IOException, InterruptedException {
-
+    public static void main(String... aaa) {
+        System.out.println(System.getProperty("os.arch"));
         MinecraftManager minecraftManager = new MinecraftManager("1.21.3");
-        DownloadManager.downloadFile(minecraftManager.getAssetsIndexURI(), "UNPROVIDED", INDEXES, false);
-        DownloadManager.downloadFiles(minecraftManager.getAssetsURIs(), OBJECTS, true);
+        minecraftManager.getLaunchArgs().forEach(System.out::println);
+        System.out.println(Path.of(System.getProperty("user.dir")).resolve("iba.json"));
+
+
+        //DownloadManager.downloadFiles(minecraftManager.getClientURI(), Path.of(System.getProperty("user.dir")), false);
+        //DownloadManager.downloadFile(minecraftManager.getAssetsIndexURI(), "UNPROVIDED", INDEXES, false);
+        //DownloadManager.check(minecraftManager.getAssetsURIs(), OBJECTS, true).forEach((uri, s) -> System.out.println(uri));
     }
 
     /*
@@ -71,15 +77,51 @@ public class MinecraftManager {
     }
 
 
-    private List<String> getLaunchArgs(String version) {
+    private List<String> getLaunchArgs() {
 
-        return null;
+        List<String> args = new ArrayList<>();
+
+        try (FileReader fileReader = new FileReader(VERSION.resolve(Path.of(versionID + ".json")).toFile())) {
+
+            JsonObject root = gson.fromJson(fileReader, JsonObject.class);
+            JsonArray jvmArguments = root.getAsJsonObject("arguments").getAsJsonArray("jvm");
+            JsonArray gameArguments = root.getAsJsonObject("arguments").getAsJsonArray("game");
+
+            for (JsonElement element : jvmArguments) {
+                String arg = element.toString().replace("\"", "");
+                if (arg.startsWith("-")) {
+                    arg = arg.replace("${natives_directory}", VERSION.resolve(Path.of("natives")).toString());
+                    if (!arg.contains("$")) {
+                        args.add(arg);
+                    }
+                }
+            }
+
+
+            String separator = System.getProperty("os.name").contains("win") ? ";" : ":";
+            StringBuilder cp = new StringBuilder("\"");
+
+            getLibrariesURIs().keySet().forEach(uri -> cp.append(uri.getPath().substring(1)).append(separator));
+            args.add(cp.deleteCharAt(cp.length() - 1).append("\"").toString());
+
+            for (JsonElement element : gameArguments) {
+                String arg = element.toString().replace("\"", "");
+                if (arg.startsWith("-") || arg.startsWith("$")) {
+                    args.add(arg);
+                }
+            }
+
+
+        } catch (IOException e) {
+            logger.error(e);
+        }
+
+
+
+        return args;
     }
 
 
-    public void checkAssets() {
-        logger.info("Checking assets and downloading missing");
-    }
 
     private Map<URI, String> getClientURI() {
         JsonObject jsonRoot = new JsonObject();
@@ -143,6 +185,7 @@ public class MinecraftManager {
             }
 
             versionID = jsonRoot.getAsJsonObject("latest").get("release").getAsString();
+            this.VERSION = VERSIONS.resolve(versionID);
 
             for (JsonElement version : versions) {
                 if (version.getAsJsonObject().get("id").getAsString().equals(versionID)) {
@@ -211,6 +254,7 @@ public class MinecraftManager {
 
         Map<URI, String> librariesURIs = new HashMap<>();
         JsonArray librariesArray = jsonRoot.getAsJsonArray("libraries");
+        String[] unusedOs = getOperatingSystemsNamesInverse();
 
         for (JsonElement libraryElement : librariesArray) {
             JsonObject libraryObject = libraryElement.getAsJsonObject();
@@ -218,7 +262,12 @@ public class MinecraftManager {
 
             if (downloads != null && downloads.has("artifact")) {
                 JsonObject artifact = downloads.getAsJsonObject("artifact");
-                librariesURIs.put(URI.create(artifact.get("url").getAsString()), artifact.get("sha1").getAsString());
+                String url = artifact.get("url").getAsString();
+
+                if (!url.contains(unusedOs[0]) && !url.contains(unusedOs[1]) && !url.contains("arm")) {
+                    librariesURIs.put(URI.create(url), artifact.get("sha1").getAsString());
+                }
+
             }
         }
 

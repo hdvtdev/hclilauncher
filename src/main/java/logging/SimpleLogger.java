@@ -56,7 +56,7 @@ public class SimpleLogger {
     }
 
     public synchronized void error(Exception e) {
-        StringBuilder errBuilder = new StringBuilder();
+        StringBuilder errBuilder = new StringBuilder("\n");
         errBuilder.append(ERROR).append(Instant.now().toString().replace('T', ' ').replace("Z", "")).append(" [HCLILauncher] [ERROR] [")
                 .append(getCallingClassName()).append(".").append(getCallingMethodName()).append("] ").append(e.getMessage()).append("\n");
         for (StackTraceElement stackTraceElement : e.getStackTrace()) {

@@ -11,7 +11,7 @@ repositories {
 
 dependencies {
     implementation("com.google.code.gson:gson:2.11.0")
-
+    implementation(files("libraries/com/github/hdvtdev/schliph/1.0.2/schliph-1.0.2.jar"))
 }
 
 

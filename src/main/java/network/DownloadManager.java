@@ -140,10 +140,11 @@ public class DownloadManager {
 
     public static void downloadFiles(Map<URI, String> urls, Path destFolder, boolean createFoldersFromURI) {
 
-        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
-             ScheduledExecutorService scheduledThread = Executors.newSingleThreadScheduledExecutor()) {
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
             filesLeft.addAndGet(urls.size());
 
+            /*
+            ScheduledExecutorService scheduledThread = Executors.newSingleThreadScheduledExecutor()
             scheduledThread.scheduleAtFixedRate(() -> {
                 System.out.print("\r" + getCurrentDownloadSpeed() + "MB/s, Files left: " + filesLeft.get() + ", Latest downloaded file: " + lastDownloadedFile.get());
                 if (filesLeft.get() == 0) {
@@ -156,14 +157,19 @@ public class DownloadManager {
             }, 500, 500, TimeUnit.MILLISECONDS);
 
 
+             */
+
             for (URI url : urls.keySet()) {
                 semaphore.acquire();
                 executor.submit(() -> downloadFile(url, urls.get(url), destFolder, createFoldersFromURI));
             }
 
+            /*
             if (!scheduledThread.awaitTermination(60, TimeUnit.SECONDS)) {
                 logger.error(new TimeoutException("The downloadFiles task did not complete within the time frame (60 seconds). Try running the download again if it's not a bug!"));
             }
+
+             */
 
 
         } catch (InterruptedException e) {

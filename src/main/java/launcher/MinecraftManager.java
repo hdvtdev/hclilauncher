@@ -9,13 +9,9 @@ import logging.SimpleLogger;
 import network.DownloadManager;
 
 import java.io.*;
-import java.net.MalformedURLException;
 import java.net.URI;
 import java.nio.file.Path;
 import java.util.*;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
 
 public class MinecraftManager {
 
@@ -35,39 +31,45 @@ public class MinecraftManager {
     private String versionID;
     private Path VERSION;
 
-
     public MinecraftManager(String versionID) {
         this.VERSION = VERSIONS.resolve(versionID);
         this.versionID = versionID;
         getVersionManifestURI();
     }
 
-    public static void main(String... aaa) {
-        System.out.println(System.getProperty("os.arch"));
-        MinecraftManager minecraftManager = new MinecraftManager("1.21.3");
-        minecraftManager.getLaunchArgs().forEach(System.out::println);
-        System.out.println(Path.of(System.getProperty("user.dir")).resolve("iba.json"));
+    public void launch() {
+
+        ProcessBuilder processBuilder = new ProcessBuilder(getLaunchArgs());
+
+        processBuilder.redirectOutput(ProcessBuilder.Redirect.INHERIT);
+        processBuilder.redirectError(ProcessBuilder.Redirect.INHERIT);
+
+        try {
+            Process process = processBuilder.start();
+            int exitCode = process.waitFor();
+            System.out.println("Exit code: " + exitCode);
+        } catch (IOException | InterruptedException e) {
+            logger.error(e);
+        }
 
 
-        //DownloadManager.downloadFiles(minecraftManager.getClientURI(), Path.of(System.getProperty("user.dir")), false);
-        //DownloadManager.downloadFile(minecraftManager.getAssetsIndexURI(), "UNPROVIDED", INDEXES, false);
-        //DownloadManager.check(minecraftManager.getAssetsURIs(), OBJECTS, true).forEach((uri, s) -> System.out.println(uri));
     }
 
-    /*
+    //FIXME: поток не успевает записать файл из-за этого происходит NullPointerException
     public void downloadAll() {
         logger.info("Starting downloading minecraft " + versionID);
-        DownloadManager.downloadFile(getVersionManifestURI(), VERSION, false);
-        DownloadManager.downloadFile(getAssetsURI(), INDEXES, false);
+        DownloadManager.downloadFile(getVersionManifestURI(), "UNPROVIDED", VERSION, false);
         DownloadManager.downloadFiles(getLibrariesURIs(), LIBRARIES, true);
-        DownloadManager.downloadFiles(getAssetsHashesURIs(), OBJECTS, true);
-        DownloadManager.downloadFile(getClientURI(), VERSION, false);
-        new File(VERSION.resolve(Path.of("client.jar")).toString()).renameTo(VERSION.resolve(Path.of(versionID + ".jar")).toFile());
-        checkAssets();
+        DownloadManager.downloadFile(getAssetsIndexURI(), "UNPROVIDED", INDEXES, false);
+        DownloadManager.downloadFiles(getClientURI(), VERSION, false);
+
+        //TODO
+        //new File(VERSION.resolve(Path.of("client.jar")).toString()).renameTo(VERSION.resolve(Path.of(versionID + ".jar")).toFile());
+
 
     }
 
-     */
+
 
     public static boolean launchMinecraft(String version) {
 
@@ -80,6 +82,7 @@ public class MinecraftManager {
     private List<String> getLaunchArgs() {
 
         List<String> args = new ArrayList<>();
+        args.add("java");
 
         try (FileReader fileReader = new FileReader(VERSION.resolve(Path.of(versionID + ".json")).toFile())) {
 
@@ -99,10 +102,13 @@ public class MinecraftManager {
 
 
             String separator = System.getProperty("os.name").contains("win") ? ";" : ":";
-            StringBuilder cp = new StringBuilder("\"");
+            StringBuilder cp = new StringBuilder();
 
-            getLibrariesURIs().keySet().forEach(uri -> cp.append(uri.getPath().substring(1)).append(separator));
-            args.add(cp.deleteCharAt(cp.length() - 1).append("\"").toString());
+            getLibrariesURIs().keySet().forEach(uri -> cp.append(LIBRARIES.resolve(uri.getPath().substring(1))).append(separator));
+            cp.append(VERSION.resolve(versionID + ".jar")).append(separator);
+            args.add(cp.deleteCharAt(cp.length() - 1).toString());
+
+            args.add(root.get("mainClass").getAsString());
 
             for (JsonElement element : gameArguments) {
                 String arg = element.toString().replace("\"", "");
@@ -110,6 +116,19 @@ public class MinecraftManager {
                     args.add(arg);
                 }
             }
+
+            //FIXME: ну эт костыль хд
+            args.set(args.indexOf("${auth_player_name}"), "Hadvart_");
+            args.set(args.indexOf("${version_name}"), versionID);
+            args.set(args.indexOf("${game_directory}"), System.getProperty("user.dir"));
+            args.set(args.indexOf("${assets_root}"), "assets");
+            args.set(args.indexOf("${assets_index_name}"), "18");
+            args.set(args.indexOf("${auth_uuid}"), String.valueOf(UUID.randomUUID()));
+            args.set(args.indexOf("${auth_access_token}"), "00000000000000000000000000000000");
+            args.set(args.indexOf("${clientid}"), "0000");
+            args.set(args.indexOf("${auth_xuid}"), "0000");
+            args.set(args.indexOf("${user_type}"), "mojang");
+            args.set(args.indexOf("${version_type}"), "release");
 
 
         } catch (IOException e) {

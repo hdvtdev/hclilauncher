@@ -5,8 +5,11 @@
 ****
 ## TODO List
 - [x] Fast Network Module
-- [] Comands parser
-- [] Config customization
-- [] Game launch (90%)
-- [] Version downloader
+- [ ] Commands parser
+- [ ] Config customization
+- [ ] Game launch (90%)
+- [ ] Version downloader
+- [ ] Fabric/Forge support
+- [ ] Modpacks
+- [ ] Support for licensed accounts
 - and there's a lot of work to be done
